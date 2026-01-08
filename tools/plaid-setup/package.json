@@ -1,0 +1,16 @@
+{
+  "name": "tax-bank-connector",
+  "version": "1.0.0",
+  "description": "Connect to banks via Plaid to pull transaction history for tax preparation",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "link": "node link.js"
+  },
+  "dependencies": {
+    "plaid": "^26.0.0",
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1",
+    "open": "^9.1.0"
+  }
+}

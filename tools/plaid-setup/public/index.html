@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tax Bank Connector</title>
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 40px 20px;
+      background: #f5f5f5;
+    }
+    h1 { color: #333; }
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    button {
+      background: #0066ff;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      margin: 5px;
+    }
+    button:hover { background: #0052cc; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    button.secondary {
+      background: #666;
+    }
+    button.success {
+      background: #28a745;
+    }
+    .status {
+      padding: 12px;
+      border-radius: 6px;
+      margin: 10px 0;
+    }
+    .status.success { background: #d4edda; color: #155724; }
+    .status.error { background: #f8d7da; color: #721c24; }
+    .status.info { background: #d1ecf1; color: #0c5460; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0;
+    }
+    th, td {
+      padding: 10px;
+      text-align: left;
+      border-bottom: 1px solid #ddd;
+    }
+    th { background: #f8f9fa; }
+    .loading {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 2px solid #ccc;
+      border-top-color: #0066ff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    #accounts-list, #transactions-preview {
+      max-height: 300px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>Tax Bank Connector</h1>
+  <p>Connect your bank accounts to automatically pull transaction history for 2023-2024.</p>
+
+  <div class="card">
+    <h2>Step 1: Connect Banks</h2>
+    <p>Click below to securely connect each bank account (personal and business).</p>
+    <button id="connect-btn" onclick="connectBank()">Connect a Bank Account</button>
+    <div id="connect-status"></div>
+  </div>
+
+  <div class="card">
+    <h2>Step 2: Connected Accounts</h2>
+    <button class="secondary" onclick="loadAccounts()">Refresh Accounts</button>
+    <div id="accounts-list">
+      <p class="status info">Click "Refresh Accounts" to see connected banks.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Step 3: Export Transactions</h2>
+    <p>Once all banks are connected, export transactions for tax preparation.</p>
+    <button class="success" onclick="exportYear(2023)">Export 2023</button>
+    <button class="success" onclick="exportYear(2024)">Export 2024</button>
+    <button class="secondary" onclick="previewTransactions()">Preview All</button>
+    <div id="export-status"></div>
+    <div id="transactions-preview"></div>
+  </div>
+
+  <div class="card">
+    <h2>Instructions</h2>
+    <ol>
+      <li>Click "Connect a Bank Account" for each bank you have</li>
+      <li>Log in through Plaid's secure interface</li>
+      <li>Repeat for all personal and business accounts</li>
+      <li>Click "Export 2023" and "Export 2024" to generate CSV files</li>
+      <li>The CSV files will be saved in the <code>taxes/exports/</code> folder</li>
+    </ol>
+  </div>
+
+  <script>
+    let linkHandler = null;
+
+    async function connectBank() {
+      const btn = document.getElementById('connect-btn');
+      const status = document.getElementById('connect-status');
+
+      btn.disabled = true;
+      status.innerHTML = '<span class="loading"></span> Initializing...';
+
+      try {
+        // Get link token from server
+        const response = await fetch('/api/create_link_token', { method: 'POST' });
+        const data = await response.json();
+
+        if (data.error) {
+          throw new Error(data.error);
+        }
+
+        // Initialize Plaid Link
+        linkHandler = Plaid.create({
+          token: data.link_token,
+          onSuccess: async (public_token, metadata) => {
+            status.innerHTML = '<span class="loading"></span> Connecting...';
+
+            // Exchange token
+            const exchangeResponse = await fetch('/api/exchange_token', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                public_token,
+                institution: metadata.institution,
+              }),
+            });
+
+            const result = await exchangeResponse.json();
+
+            if (result.success) {
+              status.innerHTML = `<div class="status success">Successfully connected to ${metadata.institution.name}!</div>`;
+              loadAccounts();
+            } else {
+              throw new Error(result.error);
+            }
+          },
+          onExit: (err, metadata) => {
+            btn.disabled = false;
+            if (err) {
+              status.innerHTML = `<div class="status error">Connection cancelled or failed.</div>`;
+            } else {
+              status.innerHTML = '';
+            }
+          },
+        });
+
+        linkHandler.open();
+      } catch (error) {
+        status.innerHTML = `<div class="status error">Error: ${error.message}</div>`;
+        btn.disabled = false;
+      }
+    }
+
+    async function loadAccounts() {
+      const container = document.getElementById('accounts-list');
+      container.innerHTML = '<span class="loading"></span> Loading...';
+
+      try {
+        const response = await fetch('/api/accounts');
+        const data = await response.json();
+
+        if (data.accounts.length === 0) {
+          container.innerHTML = '<p class="status info">No accounts connected yet.</p>';
+          return;
+        }
+
+        let html = '<table><tr><th>Institution</th><th>Account</th><th>Type</th><th>Balance</th></tr>';
+
+        for (const item of data.accounts) {
+          if (item.error) {
+            html += `<tr><td>${item.institution}</td><td colspan="3">Error: ${item.error}</td></tr>`;
+          } else {
+            for (const account of item.accounts) {
+              html += `<tr>
+                <td>${item.institution}</td>
+                <td>${account.name} (***${account.mask})</td>
+                <td>${account.type}/${account.subtype}</td>
+                <td>$${account.balance?.toLocaleString() || 'N/A'}</td>
+              </tr>`;
+            }
+          }
+        }
+
+        html += '</table>';
+        container.innerHTML = html;
+      } catch (error) {
+        container.innerHTML = `<div class="status error">Error: ${error.message}</div>`;
+      }
+    }
+
+    async function exportYear(year) {
+      const status = document.getElementById('export-status');
+      status.innerHTML = `<span class="loading"></span> Exporting ${year} transactions...`;
+
+      try {
+        const response = await fetch(`/api/export?year=${year}`);
+        const data = await response.json();
+
+        if (data.success) {
+          status.innerHTML = `<div class="status success">
+            Exported ${data.count} transactions for ${year}!<br>
+            Saved to: <code>${data.file}</code>
+          </div>`;
+        } else {
+          throw new Error(data.error);
+        }
+      } catch (error) {
+        status.innerHTML = `<div class="status error">Error: ${error.message}</div>`;
+      }
+    }
+
+    async function previewTransactions() {
+      const container = document.getElementById('transactions-preview');
+      container.innerHTML = '<span class="loading"></span> Loading transactions...';
+
+      try {
+        const response = await fetch('/api/transactions?start=2023-01-01&end=2024-12-31');
+        const data = await response.json();
+
+        if (data.transactions.length === 0) {
+          container.innerHTML = '<p class="status info">No transactions found. Connect a bank first.</p>';
+          return;
+        }
+
+        let html = `<p><strong>${data.count} transactions found</strong></p>`;
+        html += '<table><tr><th>Date</th><th>Description</th><th>Amount</th><th>Category</th></tr>';
+
+        // Show first 50 transactions
+        for (const t of data.transactions.slice(0, 50)) {
+          const amountClass = t.amount > 0 ? 'style="color:red"' : 'style="color:green"';
+          html += `<tr>
+            <td>${t.date}</td>
+            <td>${t.name}</td>
+            <td ${amountClass}>$${Math.abs(t.amount).toFixed(2)}</td>
+            <td>${(t.category || []).join(', ')}</td>
+          </tr>`;
+        }
+
+        if (data.count > 50) {
+          html += `<tr><td colspan="4"><em>... and ${data.count - 50} more</em></td></tr>`;
+        }
+
+        html += '</table>';
+        container.innerHTML = html;
+      } catch (error) {
+        container.innerHTML = `<div class="status error">Error: ${error.message}</div>`;
+      }
+    }
+
+    // Load accounts on page load
+    loadAccounts();
+  </script>
+</body>
+</html>
